@@ -1,0 +1,153 @@
+import os
+import json
+import urllib.request
+from datetime import datetime, timezone, timedelta
+
+MASSIVE_API_KEY = os.getenv("MASSIVE_API_KEY", "")
+
+SECTORS = {
+    "XLK": "Technology",
+    "XLF": "Financials",
+    "XLE": "Energy",
+    "XLV": "Health Care",
+    "XLI": "Industrials",
+    "XLY": "Consumer Discretionary",
+    "XLP": "Consumer Staples",
+    "XLU": "Utilities",
+    "XLB": "Materials",
+    "XLRE": "Real Estate",
+    "XLC": "Communication Services",
+}
+
+RISK_ON = ["XLK", "XLY", "XLF", "XLC", "XLI"]
+DEFENSIVE = ["XLU", "XLP", "XLV"]
+INFLATION = ["XLE", "XLB"]
+
+
+def fetch_massive_daily(symbol):
+    if not MASSIVE_API_KEY:
+        return []
+
+    end = datetime.now(timezone.utc).date()
+    start = end - timedelta(days=10)
+
+    url = (
+        f"https://api.massive.com/v2/aggs/ticker/{symbol}/range/1/day/"
+        f"{start.isoformat()}/{end.isoformat()}"
+        f"?adjusted=true&sort=asc&limit=20&apiKey={MASSIVE_API_KEY}"
+    )
+
+    with urllib.request.urlopen(url, timeout=12) as r:
+        data = json.loads(r.read().decode())
+
+    return data.get("results", []) or []
+
+
+def pct_change(a, b):
+    try:
+        return ((b - a) / a) * 100.0
+    except Exception:
+        return 0.0
+
+
+def sector_signal(symbol):
+    rows = fetch_massive_daily(symbol)
+
+    if len(rows) < 2:
+        return {
+            "symbol": symbol,
+            "name": SECTORS.get(symbol, symbol),
+            "bias": "Unavailable",
+            "score": 0,
+            "error": "not_enough_massive_data",
+        }
+
+    latest = rows[-1]
+    previous = rows[-2]
+    first = rows[0]
+
+    price = latest.get("c")
+    change_1d = pct_change(previous.get("c"), latest.get("c"))
+    change_period = pct_change(first.get("c"), latest.get("c"))
+
+    score = 0
+
+    if change_1d > 0.35:
+        score += 3
+    elif change_1d < -0.35:
+        score -= 3
+
+    if change_period > 1.0:
+        score += 4
+    elif change_period < -1.0:
+        score -= 4
+
+    if score >= 4:
+        bias = "Bullish"
+    elif score <= -4:
+        bias = "Bearish"
+    else:
+        bias = "Neutral"
+
+    return {
+        "symbol": symbol,
+        "name": SECTORS.get(symbol, symbol),
+        "price": round(float(price or 0), 2),
+        "change_1d": round(change_1d, 3),
+        "change_period": round(change_period, 3),
+        "score": score,
+        "bias": bias,
+        "source": "massive_aggs_daily",
+    }
+
+
+def sector_rotation():
+    rows = []
+
+    for symbol in SECTORS:
+        try:
+            rows.append(sector_signal(symbol))
+        except Exception as e:
+            rows.append({
+                "symbol": symbol,
+                "name": SECTORS.get(symbol, symbol),
+                "bias": "Unavailable",
+                "score": 0,
+                "error": str(e),
+            })
+
+    valid = [r for r in rows if r.get("bias") != "Unavailable"]
+
+    risk_on_score = sum(r.get("score", 0) for r in valid if r["symbol"] in RISK_ON)
+    defensive_score = sum(r.get("score", 0) for r in valid if r["symbol"] in DEFENSIVE)
+    inflation_score = sum(r.get("score", 0) for r in valid if r["symbol"] in INFLATION)
+
+    leaders = sorted(valid, key=lambda x: x.get("score", 0), reverse=True)[:3]
+    laggards = sorted(valid, key=lambda x: x.get("score", 0))[:3]
+
+    rotation_score = risk_on_score - defensive_score
+
+    if rotation_score >= 8:
+        signal = "RISK_ON_ROTATION"
+    elif rotation_score <= -8:
+        signal = "DEFENSIVE_ROTATION"
+    elif inflation_score >= 6:
+        signal = "INFLATION_ROTATION"
+    else:
+        signal = "MIXED_ROTATION"
+
+    return {
+        "service": "execution_service",
+        "module": "sector_rotation_engine_v2",
+        "updated_at_utc": datetime.now(timezone.utc).isoformat(),
+        "available": bool(valid),
+        "source": "massive_aggs_daily",
+        "signal": signal,
+        "rotation_score": rotation_score,
+        "risk_on_score": risk_on_score,
+        "defensive_score": defensive_score,
+        "inflation_score": inflation_score,
+        "leaders": leaders,
+        "laggards": laggards,
+        "sectors": rows,
+    }

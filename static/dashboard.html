@@ -1,0 +1,137 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Schwarz Capital Command Center V4</title>
+<style>
+body{margin:0;background:#04070d;color:#eaf0fb;font-family:Arial,Helvetica,sans-serif}
+.wrap{padding:22px}.header{display:flex;justify-content:space-between;align-items:center;margin-bottom:18px}
+.logo{font-size:26px;font-weight:900}.sub{color:#8fa3bf;font-size:13px}
+.grid4{display:grid;grid-template-columns:repeat(4,1fr);gap:14px}.grid5{display:grid;grid-template-columns:repeat(5,1fr);gap:10px}
+.two{display:grid;grid-template-columns:2fr 1fr;gap:14px}.section{margin-top:14px}
+.card{background:linear-gradient(180deg,#111827,#0b111d);border:1px solid #243247;border-radius:16px;padding:15px}
+.label{color:#91a4bf;font-size:11px;text-transform:uppercase;letter-spacing:.08em}.value{font-size:25px;font-weight:900;margin-top:8px}
+.good{color:#24d17e}.bad{color:#ff5b6b}.warn{color:#ffcc66}.muted{color:#9aa8bb}
+.bar{height:10px;background:#1b2638;border-radius:10px;overflow:hidden;margin-top:8px}.fill{height:100%;background:#2f80ed}
+.check{display:grid;grid-template-columns:30px 1fr;gap:8px;padding:10px 0;border-bottom:1px solid #1d293a}
+.check b{font-size:14px}.detail{font-size:12px;color:#9fb0c8;margin-top:4px}
+.pill{display:inline-block;padding:6px 9px;border-radius:999px;background:#162235;margin:4px;font-size:12px}
+.feed{max-height:310px;overflow:auto}.feed div{border-bottom:1px solid #1d293a;padding:8px 0;font-size:13px}
+pre{white-space:pre-wrap;font-size:12px;color:#9fb0c8}details{margin-top:14px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="header">
+    <div><div class="logo">SCHWARZ CAPITAL COMMAND CENTER V4</div><div class="sub" id="updated">Loading...</div></div>
+    <div class="sub">Paper Mode • Live Locked • RexFour Access</div>
+  </div>
+
+  <div class="grid4">
+    <div class="card"><div class="label">Execution</div><div id="decision" class="value warn">...</div></div>
+    <div class="card"><div class="label">Direction</div><div id="direction" class="value">...</div></div>
+    <div class="card"><div class="label">Conviction</div><div id="conviction" class="value">...</div><div class="bar"><div id="convbar" class="fill"></div></div></div>
+    <div class="card"><div class="label">Entry Status</div><div id="entry" class="value">...</div></div>
+  </div>
+
+  <div class="grid4 section">
+    <div class="card"><div class="label">Gamma</div><div id="gamma" class="value">...</div></div>
+    <div class="card"><div class="label">Dealer Flow</div><div id="dealer" class="value">...</div></div>
+    <div class="card"><div class="label">Technical Bias</div><div id="techbias" class="value">...</div></div>
+    <div class="card"><div class="label">Bot Permission</div><div id="botperm" class="value">...</div></div>
+  </div>
+
+  <div class="grid5 section">
+    <div class="card"><div class="label">Gate Checks</div><div id="checks" class="value">0</div></div>
+    <div class="card"><div class="label">Developing</div><div id="developing" class="value warn">0</div></div>
+    <div class="card"><div class="label">Ready</div><div id="ready" class="value good">0</div></div>
+    <div class="card"><div class="label">Entries</div><div id="entries" class="value good">0</div></div>
+    <div class="card"><div class="label">Exits</div><div id="exits" class="value">0</div></div>
+  </div>
+
+  <div class="grid4 section">
+    <div class="card"><div class="label">Development Ratio</div><div id="devratio" class="value warn">0%</div></div>
+    <div class="card"><div class="label">Readiness Ratio</div><div id="readyratio" class="value good">0%</div></div>
+    <div class="card"><div class="label">Errors</div><div id="errors" class="value bad">0</div></div>
+    <div class="card"><div class="label">Open Position</div><div id="posSummary" class="value warn">No Position</div></div>
+  </div>
+
+  <div class="two section">
+    <div class="card"><div class="label">Execution Checklist</div><div id="checksList"></div></div>
+    <div>
+      <div class="card"><div class="label">Missing Confirmations</div><div id="missing"></div></div>
+      <div class="card section"><div class="label">Position Details</div><pre id="position">Waiting...</pre></div>
+    </div>
+  </div>
+
+  <div class="two section">
+    <div class="card"><div class="label">Market / Technical Context</div><pre id="context">...</pre></div>
+    <div class="card"><div class="label">Alert Feed</div><div id="feed" class="feed">Loading...</div></div>
+  </div>
+
+  <details><summary class="muted">Developer Raw Gate Snapshot</summary><pre id="raw">...</pre></details>
+</div>
+
+<script>
+async function getJSON(url){ const r=await fetch(url+"?t="+Date.now()); return await r.json(); }
+function klass(v){v=String(v||""); if(v.includes("READY"))return"value good"; if(v.includes("BLOCKED"))return"value bad"; if(v.includes("WAIT"))return"value warn"; return"value";}
+function dirklass(v){return v==="SHORT"?"value bad":v==="LONG"?"value good":"value warn";}
+function mark(p){return p?"✅":"❌";}
+function clean(s){return String(s||"").replaceAll("_"," ").toUpperCase();}
+function fmt(c){const d=c.detail||{}; if(c.check==="technical_confirmation")return`MACD ${d.macd_state} | Histogram ${d.histogram_state} | Momentum ${d.momentum_state} | Permission ${d.bot_permission}`; if(c.check==="risk_layer_available")return`Kill ${d.kill_switch_enabled} | Mode ${d.execution_mode} | ${d.execution}`; return JSON.stringify(d);}
+async function refresh(){
+  const gate=await getJSON('/execution/intelligence-v2');
+  const paper=await getJSON('/paper/dashboard-summary');
+
+  updated.innerText="Updated "+new Date().toLocaleString();
+
+  decision.innerText=gate.execution_decision||"UNKNOWN"; decision.className=klass(gate.execution_decision);
+  direction.innerText=gate.direction||"WAIT"; direction.className=dirklass(gate.direction);
+  conviction.innerText=gate.conviction??"N/A"; convbar.style.width=Math.min(Number(gate.conviction||0),100)+"%";
+  entry.innerText=gate.entry_status||"UNKNOWN"; entry.className=klass(gate.entry_status);
+
+  const ctx=gate.base_gate?.context||{}; const tech=ctx.technical_confirmation||{};
+  gamma.innerText=ctx.gamma_regime||"N/A"; gamma.className=String(ctx.gamma_regime||"").includes("NEGATIVE")?"value bad":"value good";
+  dealer.innerText=ctx.dealer_flow||"N/A";
+  techbias.innerText=tech.technical_bias||"N/A"; techbias.className=klass(tech.technical_bias);
+  botperm.innerText=tech.bot_permission||"N/A"; botperm.className=klass(tech.bot_permission);
+
+  checks.innerText=paper.gate_checks??0;
+  developing.innerText=paper.setup_developing??0;
+  ready.innerText=paper.ready_count??0;
+  entries.innerText=paper.paper_entries??0;
+  exits.innerText=paper.paper_exits??0;
+  devratio.innerText=(paper.development_ratio??0)+"%";
+  readyratio.innerText=(paper.readiness_ratio??0)+"%";
+  errors.innerText=paper.errors??0;
+
+  const all=[...(gate.base_gate?.checks||[]),...(gate.v2_checks||[])];
+  checksList.innerHTML=all.map(c=>`<div class="check"><div>${mark(c.passed)}</div><div><b>${clean(c.check)}</b><div class="detail">${fmt(c)}</div></div></div>`).join("");
+
+  const miss=gate.v2_missing_confirmations||[];
+  missing.innerHTML=miss.length?miss.map(x=>`<span class="pill">${clean(x)}</span>`).join(""):"<span class='good'>None</span>";
+
+  if(paper.open_position){
+    posSummary.innerText=`${paper.open_position.symbol} ${paper.open_position.direction}`;
+    posSummary.className=dirklass(paper.open_position.direction);
+    position.innerText=JSON.stringify(paper.open_position,null,2);
+  }else{
+    posSummary.innerText="No Position"; posSummary.className="value warn"; position.innerText="Waiting for execution setup...";
+  }
+
+  context.innerText=`Price: ${gate.price}
+Gamma: ${ctx.gamma_regime||"N/A"}
+Dealer Flow: ${ctx.dealer_flow||"N/A"}
+MACD: ${tech.macd_state||"N/A"}
+Histogram: ${tech.histogram_state||"N/A"}
+Momentum: ${tech.momentum_state||"N/A"}
+EMA20: ${tech.ema20||"N/A"}
+EMA50: ${tech.ema50||"N/A"}`;
+
+  feed.innerHTML=(paper.recent_events||[]).slice().reverse().map(e=>`<div><b>${e.event}</b> • ${e.ts_utc||""}<br><span class="muted">${e.direction||e.reason||e.decision||""} ${e.conviction??""}</span></div>`).join("") || "No events yet";
+  raw.innerText=JSON.stringify(gate,null,2);
+}
+refresh(); setInterval(refresh,5000);
+</script>
+</body>
+</html>

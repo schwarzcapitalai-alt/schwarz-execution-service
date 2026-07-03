@@ -1,0 +1,49 @@
+import requests
+
+FORECAST_URL = "http://172.31.19.197:8787/data/forecast_input.json"
+
+def get_forecast():
+    try:
+        r = requests.get(FORECAST_URL, timeout=3)
+        r.raise_for_status()
+        return r.json()
+    except Exception as e:
+        return {
+            "error": str(e),
+            "institutional_bias": "UNKNOWN",
+            "forecast": {"direction": "UNKNOWN", "risk": "UNKNOWN"}
+        }
+
+def trade_bias():
+    f = get_forecast()
+    direction = str(f.get("institutional_bias", "")).upper()
+    gamma = str(f.get("gamma_regime", "")).upper()
+    risk = str(f.get("forecast", {}).get("risk", "")).upper()
+
+    if direction == "BEARISH" and "NEGATIVE" in gamma:
+        bias = "SHORT_ONLY"
+        reason = "Bearish institutional bias with negative gamma"
+    elif direction == "BULLISH" and "POSITIVE" in gamma:
+        bias = "LONG_ONLY"
+        reason = "Bullish institutional bias with positive gamma"
+    elif risk == "HIGH":
+        bias = "REDUCED_SIZE"
+        reason = "High-risk forecast environment"
+    else:
+        bias = "BOTH_ALLOWED"
+        reason = "No strong directional restriction"
+
+    return {
+        "bias": bias,
+        "reason": reason,
+        "ticker": f.get("ticker"),
+        "spy_price": f.get("spy_price"),
+        "institutional_bias": f.get("institutional_bias"),
+        "confidence": f.get("confidence"),
+        "gamma_regime": f.get("gamma_regime"),
+        "net_gex": f.get("net_gex"),
+        "call_wall": f.get("call_wall"),
+        "put_wall": f.get("put_wall"),
+        "risk": risk,
+        "forecast": f
+    }

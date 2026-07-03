@@ -1,0 +1,451 @@
+
+    def openOrder(self, orderId, contract, order, orderState):
+        self.open_order_rows.append({
+            "orderId": orderId,
+            "symbol": contract.symbol,
+            "secType": contract.secType,
+            "exchange": contract.exchange,
+            "currency": contract.currency,
+            "action": order.action,
+            "orderType": order.orderType,
+            "totalQuantity": float(order.totalQuantity),
+            "lmtPrice": float(order.lmtPrice) if order.lmtPrice else None,
+            "auxPrice": float(order.auxPrice) if order.auxPrice else None,
+            "status": orderState.status,
+        })
+
+    def openOrderEnd(self):
+        self.open_order_done = True
+
+    def execDetails(self, reqId, contract, execution):
+        self.execution_rows.append({
+            "reqId": reqId,
+            "symbol": contract.symbol,
+            "secType": contract.secType,
+            "exchange": contract.exchange,
+            "currency": contract.currency,
+            "execId": execution.execId,
+            "time": execution.time,
+            "acctNumber": execution.acctNumber,
+            "side": execution.side,
+            "shares": float(execution.shares),
+            "price": float(execution.price),
+            "orderId": execution.orderId,
+            "clientId": execution.clientId,
+        })
+
+    def execDetailsEnd(self, reqId):
+        self.execution_done = True
+
+
+def connect_ib():
+    app_ib = IBApp()
+    client_id = next(CLIENT_ID_COUNTER)
+    app_ib.connect(IB_HOST, IB_PORT, clientId=client_id)
+
+    thread = threading.Thread(target=app_ib.run, daemon=True)
+    thread.start()
+
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        if app_ib.connected_flag:
+            break
+        time.sleep(0.1)
+
+    app_ib.client_id_used = client_id
+    return app_ib
+
+
+def load_risk_limits():
+    try:
+        with open(RISK_CONFIG_PATH, "r") as f:
+            data = json.load(f)
+
+        return {
+            "max_notional_usd": float(data.get("max_notional_usd", 0)),
+            "max_quantity": float(data.get("max_quantity", 0)),
+            "allowed_symbols": [str(x).upper() for x in data.get("allowed_symbols", [])],
+            "blocked_sides": [str(x).upper() for x in data.get("blocked_sides", [])],
+            "allowed_accounts": [str(x) for x in data.get("allowed_accounts", [])],
+            "execution": data.get("execution", "READ_ONLY_PRETRADE_ONLY"),
+        }
+    except Exception as e:
+        return {
+            "max_notional_usd": 0,
+            "max_quantity": 0,
+            "allowed_symbols": [],
+            "blocked_sides": ["BUY", "SELL"],
+            "allowed_accounts": [],
+            "execution": f"RISK_CONFIG_LOAD_FAILED: {e}",
+        }
+
+
+def dedupe_rows(rows):
+    seen = set()
+    out = []
+    for row in rows:
+        key = tuple(sorted(row.items()))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(row)
+    return out
+
+
+def write_audit_log(event):
+    try:
+        event["ts_utc"] = datetime.now(timezone.utc).isoformat()
+        with open(AUDIT_LOG_PATH, "a") as f:
+            f.write(json.dumps(event, sort_keys=True) + "\n")
+    except Exception as e:
+        print(f"AUDIT_LOG_WRITE_FAILED: {e}", flush=True)
+
+
+def visible_accounts_from_cash_rows(cash_rows):
+    return sorted({row.get("account") for row in cash_rows if row.get("account")})
+
+
+def account_allowlist_check(cash_rows):
+    limits = load_risk_limits()
+    account_check = account_allowlist_check(snap.get("cash", []))
+    allowed = set(limits.get("allowed_accounts", []))
+    visible = set(visible_accounts_from_cash_rows(cash_rows))
+
+    if not allowed:
+        return {"ok": False, "allowed_accounts": [], "visible_accounts": sorted(visible), "error": "allowed_accounts is empty."}
+
+    if not visible:
+        return {"ok": False, "allowed_accounts": sorted(allowed), "visible_accounts": [], "error": "no visible IB accounts found."}
+
+    unapproved = sorted(visible - allowed)
+    if unapproved:
+        return {
+            "ok": False,
+            "allowed_accounts": sorted(allowed),
+            "visible_accounts": sorted(visible),
+            "error": "visible IB account is not in allowed_accounts.",
+            "unapproved_accounts": unapproved,
+        }
+
+    return {"ok": True, "allowed_accounts": sorted(allowed), "visible_accounts": sorted(visible), "error": None}
+
+
+@app.get("/")
+def root():
+    return {"service": "execution_service", "mode": EXECUTION_MODE}
+
+
+@app.get("/health")
+def health():
+    return {"service": "execution_service", "status": "healthy"}
+
+
+@app.get("/ib/status")
+def ib_status():
+    app_ib = connect_ib()
+    result = {
+        "connected": app_ib.isConnected(),
+        "api_ready": app_ib.connected_flag,
+        "host": IB_HOST,
+        "port": IB_PORT,
+        "mode": EXECUTION_MODE,
+        "client_id_used": getattr(app_ib, "client_id_used", None),
+    }
+    app_ib.disconnect()
+    return result
+
+
+@app.get("/account/cash")
+def account_cash():
+    app_ib = connect_ib()
+    if not app_ib.isConnected():
+        return {"connected": False, "mode": EXECUTION_MODE, "cash": []}
+
+    tags = "NetLiquidation,TotalCashValue,AvailableFunds,BuyingPower,ExcessLiquidity"
+    app_ib.reqAccountSummary(9001, "All", tags)
+
+    deadline = time.time() + 8
+    while time.time() < deadline:
+        if app_ib.account_summary_done:
+            break
+        time.sleep(0.1)
+
+    app_ib.cancelAccountSummary(9001)
+    result = {"connected": app_ib.isConnected(), "mode": EXECUTION_MODE, "cash": dedupe_rows(app_ib.account_summary_rows)}
+    app_ib.disconnect()
+    return result
+
+
+@app.get("/account/positions")
+def account_positions():
+    app_ib = connect_ib()
+    if not app_ib.isConnected():
+        return {"connected": False, "mode": EXECUTION_MODE, "positions": []}
+
+    app_ib.reqPositions()
+
+    deadline = time.time() + 8
+    while time.time() < deadline:
+        if app_ib.position_done:
+            break
+        time.sleep(0.1)
+
+    app_ib.cancelPositions()
+    result = {"connected": app_ib.isConnected(), "mode": EXECUTION_MODE, "positions": app_ib.position_rows}
+    app_ib.disconnect()
+    return result
+
+
+@app.get("/account/snapshot")
+def account_snapshot():
+    cash_data = account_cash()
+    positions_data = account_positions()
+    return {
+        "connected": bool(cash_data.get("connected")),
+        "mode": EXECUTION_MODE,
+        "cash": cash_data.get("cash", []),
+        "positions": positions_data.get("positions", []),
+    }
+
+
+@app.get("/config/risk")
+def config_risk():
+    return {"mode": EXECUTION_MODE, "risk_config_path": RISK_CONFIG_PATH, "limits": load_risk_limits()}
+
+
+@app.get("/risk/limits")
+def risk_limits():
+    return {"mode": EXECUTION_MODE, "limits": load_risk_limits(), "execution": "DISABLED_READ_ONLY_NO_ORDER_ROUTE"}
+
+
+@app.get("/risk/kill-switch")
+def risk_kill_switch():
+    return {
+        "mode": EXECUTION_MODE,
+        "kill_switch_enabled": KILL_SWITCH_ENABLED,
+        "reason": KILL_SWITCH_REASON,
+        "execution": "GLOBAL_EXECUTION_BLOCK_ACTIVE" if KILL_SWITCH_ENABLED else "GLOBAL_EXECUTION_BLOCK_INACTIVE",
+    }
+
+
+@app.post("/pretrade/check")
+def pretrade_check(req: PreTradeRequest):
+    side = req.side.upper().strip()
+    symbol = req.symbol.upper().strip()
+    notional = float(req.quantity) * float(req.estimated_price)
+    snapshot = account_snapshot()
+    cash_rows = snapshot.get("cash", [])
+    account_check = account_allowlist_check(cash_rows)
+
+    available_funds = None
+    for row in cash_rows:
+        if row.get("tag") == "AvailableFunds":
+            try:
+                available_funds = float(row.get("value"))
+            except Exception:
+                available_funds = None
+
+    limits = load_risk_limits()
+    errors = []
+    warnings = []
+
+    if KILL_SWITCH_ENABLED:
+        errors.append("global kill switch is enabled.")
+
+    if not account_check.get("ok"):
+        errors.append(account_check.get("error", "account allowlist check failed."))
+
+    if EXECUTION_MODE != "READ_ONLY":
+        errors.append("Service is not in READ_ONLY mode.")
+
+    if side not in {"BUY", "SELL"}:
+        errors.append("side must be BUY or SELL.")
+
+    if req.quantity <= 0:
+        errors.append("quantity must be greater than zero.")
+
+    if req.estimated_price <= 0:
+        errors.append("estimated_price must be greater than zero.")
+
+    if symbol not in set(limits.get("allowed_symbols", [])):
+        errors.append("symbol is not in allowed_symbols.")
+
+    if side in set(limits.get("blocked_sides", [])):
+        errors.append("side is currently blocked by risk limits.")
+
+    if float(limits.get("max_notional_usd", 0)) > 0 and notional > float(limits.get("max_notional_usd", 0)):
+        errors.append("estimated notional exceeds max_notional_usd.")
+
+    if float(limits.get("max_quantity", 0)) > 0 and req.quantity > float(limits.get("max_quantity", 0)):
+        errors.append("quantity exceeds max_quantity.")
+
+    if side == "BUY" and available_funds is not None and notional > available_funds:
+        errors.append("estimated notional exceeds AvailableFunds.")
+
+    if available_funds is None:
+        warnings.append("AvailableFunds unavailable; cash check incomplete.")
+
+    result = {
+        "allowed": len(errors) == 0,
+        "mode": EXECUTION_MODE,
+        "symbol": symbol,
+        "side": side,
+        "quantity": req.quantity,
+        "estimated_price": req.estimated_price,
+        "estimated_notional": notional,
+        "available_funds": available_funds,
+        "account_check": account_check,
+        "errors": errors,
+        "warnings": warnings,
+        "kill_switch_enabled": KILL_SWITCH_ENABLED,
+        "kill_switch_reason": KILL_SWITCH_REASON,
+        "risk_limits": limits,
+        "account_check": account_check,
+        "execution": "DISABLED_READ_ONLY_NO_ORDER_ROUTE",
+    }
+
+    write_audit_log({"event": "pretrade_check", "request": req.model_dump(), "result": result})
+    return result
+
+
+@app.get("/audit/pretrade")
+def audit_pretrade_tail(limit: int = 20):
+    limit = max(1, min(int(limit), 100))
+    try:
+        with open(AUDIT_LOG_PATH, "r") as f:
+            lines = f.readlines()[-limit:]
+        events = []
+        for line in lines:
+            try:
+                events.append(json.loads(line))
+            except Exception:
+                pass
+        return {"mode": EXECUTION_MODE, "audit_log_path": AUDIT_LOG_PATH, "count": len(events), "events": events}
+    except FileNotFoundError:
+        return {"mode": EXECUTION_MODE, "audit_log_path": AUDIT_LOG_PATH, "count": 0, "events": []}
+
+
+@app.get("/orders/open")
+def orders_open():
+    app_ib = connect_ib()
+    if not app_ib.isConnected():
+        return {"connected": False, "mode": EXECUTION_MODE, "open_orders": []}
+
+    app_ib.reqOpenOrders()
+    deadline = time.time() + 8
+    while time.time() < deadline:
+        if app_ib.open_order_done:
+            break
+        time.sleep(0.1)
+
+    result = {"connected": app_ib.isConnected(), "mode": EXECUTION_MODE, "open_orders": app_ib.open_order_rows, "execution": "DISABLED_READ_ONLY_NO_ORDER_ROUTE"}
+    app_ib.disconnect()
+    return result
+
+
+@app.get("/executions/recent")
+def executions_recent():
+    app_ib = connect_ib()
+    if not app_ib.isConnected():
+        return {"connected": False, "mode": EXECUTION_MODE, "executions": []}
+
+    app_ib.reqExecutions(9301, ExecutionFilter())
+    deadline = time.time() + 8
+    while time.time() < deadline:
+        if app_ib.execution_done:
+            break
+        time.sleep(0.1)
+
+    result = {"connected": app_ib.isConnected(), "mode": EXECUTION_MODE, "executions": app_ib.execution_rows, "execution": "DISABLED_READ_ONLY_NO_ORDER_ROUTE"}
+    app_ib.disconnect()
+    return result
+
+
+@app.post("/order/proposal")
+def order_proposal(req: OrderProposalRequest):
+    pretrade = pretrade_check(PreTradeRequest(symbol=req.symbol, side=req.side, quantity=req.quantity, estimated_price=req.estimated_price))
+
+    order_type = req.order_type.upper().strip()
+    tif = req.time_in_force.upper().strip()
+    side = req.side.upper().strip()
+    symbol = req.symbol.upper().strip()
+
+    errors = list(pretrade.get("errors", []))
+    warnings = list(pretrade.get("warnings", []))
+
+    if order_type not in {"MKT", "LMT"}:
+        errors.append("order_type must be MKT or LMT.")
+
+    if tif not in {"DAY"}:
+        errors.append("time_in_force must be DAY.")
+
+    if order_type == "LMT" and (req.limit_price is None or req.limit_price <= 0):
+        errors.append("limit_price is required and must be greater than zero for LMT orders.")
+
+    proposal = {
+        "symbol": symbol,
+        "side": side,
+        "quantity": req.quantity,
+        "order_type": order_type,
+        "limit_price": req.limit_price if order_type == "LMT" else None,
+        "time_in_force": tif,
+        "estimated_price": req.estimated_price,
+        "estimated_notional": pretrade.get("estimated_notional"),
+        "status": "PROPOSED_DRY_RUN_ONLY",
+    }
+
+    return {
+        "accepted": len(errors) == 0,
+        "mode": EXECUTION_MODE,
+        "proposal": proposal,
+        "pretrade": pretrade,
+        "errors": errors,
+        "warnings": warnings,
+        "kill_switch_enabled": KILL_SWITCH_ENABLED,
+        "kill_switch_reason": KILL_SWITCH_REASON,
+        "execution": "DISABLED_DRY_RUN_ONLY_NO_ORDER_ROUTE",
+    }
+
+
+@app.get("/checks/readiness")
+def checks_readiness():
+    ib = ib_status()
+    snap = account_snapshot()
+    kill = risk_kill_switch()
+    limits = load_risk_limits()
+    account_check = account_allowlist_check(snap.get("cash", []))
+
+    audit_writable = False
+    try:
+        with open(AUDIT_LOG_PATH, "a") as f:
+            f.write("")
+        audit_writable = True
+    except Exception:
+        audit_writable = False
+
+    checks = {
+        "ib_connected": bool(ib.get("connected")),
+        "ib_api_ready": bool(ib.get("api_ready")),
+        "kill_switch_disabled": not bool(kill.get("kill_switch_enabled")),
+        "risk_limits_loaded": bool(limits.get("allowed_symbols")) and float(limits.get("max_notional_usd", 0)) > 0,
+        "account_connected": bool(snap.get("connected")),
+        "cash_available": len(snap.get("cash", [])) > 0,
+        "positions_visible": "positions" in snap,
+        "account_allowlisted": bool(account_check.get("ok")),
+        "account_allowlisted": bool(account_check.get("ok")),
+        "audit_writable": audit_writable,
+        "read_only_mode": EXECUTION_MODE == "READ_ONLY",
+        "order_route_absent": True,
+    }
+
+    return {
+        "service": "execution_service",
+        "mode": EXECUTION_MODE,
+        "ready_for_execution": False,
+        "safe_to_observe": checks["ib_connected"] and checks["account_connected"] and checks["audit_writable"],
+        "checks": checks,
+        "kill_switch": kill,
+        "risk_limits": limits,
+        "account_check": account_check,
+        "execution": "BLOCKED_READ_ONLY_OR_KILL_SWITCH",
+    }

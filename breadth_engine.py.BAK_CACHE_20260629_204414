@@ -1,0 +1,160 @@
+import math
+import time
+import requests
+
+YAHOO_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?range=5d&interval=5m"
+
+SYMBOLS = {
+    "SPY": "S&P 500",
+    "QQQ": "Nasdaq 100",
+    "IWM": "Russell 2000",
+    "DIA": "Dow Jones",
+    "XLK": "Technology",
+    "XLF": "Financials",
+    "XLE": "Energy",
+    "XLV": "Health Care",
+    "XLI": "Industrials",
+    "XLY": "Consumer Discretionary",
+    "XLP": "Consumer Staples",
+    "XLU": "Utilities",
+}
+
+RISK_ON = ["SPY", "QQQ", "IWM", "XLK", "XLF", "XLY"]
+RISK_OFF = ["XLU", "XLP", "XLV"]
+
+
+def yahoo_closes(symbol):
+    url = YAHOO_URL.format(symbol=symbol)
+    r = requests.get(url, timeout=8)
+    r.raise_for_status()
+    data = r.json()
+    result = data["chart"]["result"][0]
+    closes = result["indicators"]["quote"][0]["close"]
+    closes = [x for x in closes if x is not None]
+    return closes
+
+
+def pct_change(a, b):
+    if not a or not b:
+        return 0.0
+    return ((b - a) / a) * 100.0
+
+
+def symbol_signal(symbol):
+    closes = yahoo_closes(symbol)
+
+    if len(closes) < 40:
+        return {
+            "symbol": symbol,
+            "price": closes[-1] if closes else None,
+            "change_5m": 0,
+            "change_30m": 0,
+            "change_day": 0,
+            "score": 0,
+            "bias": "Neutral",
+        }
+
+    price = closes[-1]
+    change_5m = pct_change(closes[-2], closes[-1])
+    change_30m = pct_change(closes[-7], closes[-1])
+    change_day = pct_change(closes[0], closes[-1])
+
+    score = 0
+
+    if change_5m > 0:
+        score += 1
+    elif change_5m < 0:
+        score -= 1
+
+    if change_30m > 0.15:
+        score += 2
+    elif change_30m < -0.15:
+        score -= 2
+
+    if change_day > 0.25:
+        score += 3
+    elif change_day < -0.25:
+        score -= 3
+
+    if score >= 3:
+        bias = "Bullish"
+    elif score <= -3:
+        bias = "Bearish"
+    else:
+        bias = "Neutral"
+
+    return {
+        "symbol": symbol,
+        "name": SYMBOLS.get(symbol, symbol),
+        "price": round(price, 2),
+        "change_5m": round(change_5m, 3),
+        "change_30m": round(change_30m, 3),
+        "change_day": round(change_day, 3),
+        "score": score,
+        "bias": bias,
+    }
+
+
+def market_breadth():
+    rows = []
+
+    for symbol in SYMBOLS:
+        try:
+            rows.append(symbol_signal(symbol))
+            time.sleep(0.15)
+        except Exception as e:
+            rows.append({
+                "symbol": symbol,
+                "name": SYMBOLS.get(symbol, symbol),
+                "error": str(e),
+                "score": 0,
+                "bias": "Unavailable",
+            })
+
+    valid = [r for r in rows if r.get("bias") != "Unavailable"]
+
+    bullish = sum(1 for r in valid if r.get("bias") == "Bullish")
+    bearish = sum(1 for r in valid if r.get("bias") == "Bearish")
+    neutral = sum(1 for r in valid if r.get("bias") == "Neutral")
+
+    total_score = sum(r.get("score", 0) for r in valid)
+
+    risk_on_score = sum(r.get("score", 0) for r in valid if r["symbol"] in RISK_ON)
+    risk_off_score = sum(r.get("score", 0) for r in valid if r["symbol"] in RISK_OFF)
+
+    participation = 0
+    if valid:
+        participation = round((bullish - bearish) / len(valid) * 100, 1)
+
+    if total_score >= 12 and risk_on_score > risk_off_score:
+        bias = "BULLISH_PARTICIPATION"
+        forecast_effect = "Bullish confirmation. Long setups have higher quality."
+    elif total_score <= -12:
+        bias = "BEARISH_PARTICIPATION"
+        forecast_effect = "Bearish confirmation. Short setups have higher quality."
+    elif risk_off_score > risk_on_score and total_score <= 3:
+        bias = "RISK_OFF_ROTATION"
+        forecast_effect = "Risk-off rotation detected. Longs should be reduced or blocked."
+    else:
+        bias = "MIXED_BREADTH"
+        forecast_effect = "Market participation is mixed. Forecast confidence should be reduced."
+
+    leaders = sorted(valid, key=lambda x: x.get("score", 0), reverse=True)[:3]
+    laggards = sorted(valid, key=lambda x: x.get("score", 0))[:3]
+
+    return {
+        "service": "execution_service",
+        "module": "market_breadth_engine_v1",
+        "bias": bias,
+        "forecast_effect": forecast_effect,
+        "total_score": total_score,
+        "participation_score": participation,
+        "bullish_count": bullish,
+        "bearish_count": bearish,
+        "neutral_count": neutral,
+        "risk_on_score": risk_on_score,
+        "risk_off_score": risk_off_score,
+        "leaders": leaders,
+        "laggards": laggards,
+        "symbols": rows,
+    }

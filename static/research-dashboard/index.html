@@ -1,0 +1,116 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Schwarz Research Lab</title>
+  <style>
+    body {
+      margin: 0;
+      background: #070b12;
+      color: #e8eefc;
+      font-family: Arial, sans-serif;
+    }
+    header {
+      padding: 22px 28px;
+      border-bottom: 1px solid #1d2638;
+      background: #0b1220;
+    }
+    h1 {
+      margin: 0;
+      font-size: 26px;
+    }
+    .sub {
+      color: #8fa3c7;
+      margin-top: 6px;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 18px;
+      padding: 22px;
+    }
+    .card {
+      background: #0e1728;
+      border: 1px solid #1e2a40;
+      border-radius: 14px;
+      padding: 18px;
+      min-height: 220px;
+    }
+    .card h2 {
+      margin-top: 0;
+      font-size: 18px;
+      color: #ffffff;
+    }
+    pre {
+      white-space: pre-wrap;
+      word-break: break-word;
+      color: #c9d7f2;
+      font-size: 13px;
+      line-height: 1.45;
+    }
+    .badge {
+      display: inline-block;
+      padding: 5px 9px;
+      border-radius: 999px;
+      background: #13233c;
+      color: #9fc2ff;
+      font-size: 12px;
+      margin-top: 8px;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Schwarz Capital Research Lab</h1>
+    <div class="sub">Autonomous trading performance, research, hypothesis testing, and replay hub.</div>
+    <span class="badge">Research Dashboard v1</span>
+  </header>
+
+  <div class="grid">
+    <section class="card">
+      <h2>Daily Performance</h2>
+      <pre id="daily">Loading...</pre>
+    </section>
+
+    <section class="card">
+      <h2>Factor Rankings</h2>
+      <pre id="factors">Loading...</pre>
+    </section>
+
+    <section class="card">
+      <h2>Hypothesis Tests</h2>
+      <pre id="hypothesis">Loading...</pre>
+    </section>
+
+    <section class="card">
+      <h2>Replay</h2>
+      <pre id="replay">Replay Engine v1 active.
+
+Files:
+  /opt/schwarz/replay/replay_YYYY-MM-DD.json
+
+Command:
+  /opt/schwarz/scripts/schwarz_replay_engine_v1.py --date YYYY-MM-DD --print --market-only
+      </pre>
+    </section>
+  </div>
+
+  <script>
+    const today = new Date().toISOString().slice(0, 10);
+
+    async function loadText(id, url) {
+      try {
+        const r = await fetch(url + "?t=" + Date.now());
+        if (!r.ok) throw new Error("missing");
+        document.getElementById(id).textContent = await r.text();
+      } catch (e) {
+        document.getElementById(id).textContent = "No data yet.";
+      }
+    }
+
+    loadText("daily", `/research-data/daily_trade_report_${today}.txt`);
+    loadText("factors", `/research-data/research_factor_rankings.txt`);
+    loadText("hypothesis", `/research-data/hypothesis_report.txt`);
+  </script>
+</body>
+</html>

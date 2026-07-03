@@ -1,0 +1,88 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Schwarz Capital Bot Terminal v2</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="/bot-terminal/style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div>
+    <div class="brand">SCHWARZ CAPITAL</div>
+    <div class="subtitle">Autonomous Bot Terminal v2</div>
+  </div>
+  <div class="clock" id="updated">Loading...</div>
+</header>
+
+<main class="terminal">
+
+<section class="hero">
+  <div class="hero-card">
+    <div class="label">Bot State</div>
+    <div id="botState" class="big yellow">LOADING</div>
+  </div>
+  <div class="hero-card">
+    <div class="label">IBKR</div>
+    <div id="ibkr" class="big yellow">LOADING</div>
+  </div>
+  <div class="hero-card">
+    <div class="label">Execution Mode</div>
+    <div id="mode" class="big yellow">LOADING</div>
+  </div>
+  <div class="hero-card">
+    <div class="label">Risk</div>
+    <div id="risk" class="big yellow">LOADING</div>
+  </div>
+</section>
+
+<section class="grid">
+  <div class="panel">
+    <div class="panel-title">Account</div>
+    <div class="metric"><span>Net Liquidation</span><b id="netLiq">—</b></div>
+    <div class="metric"><span>Buying Power</span><b id="buyingPower">—</b></div>
+    <div class="metric"><span>Available Funds</span><b id="availableFunds">—</b></div>
+    <div class="metric"><span>Total Cash</span><b id="totalCash">—</b></div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-title">AI Decision</div>
+    <div class="metric"><span>Action</span><b id="decisionAction">—</b></div>
+    <div class="metric"><span>Direction</span><b id="direction">—</b></div>
+    <div class="metric"><span>Confidence</span><b id="confidence">—</b></div>
+    <div class="metric"><span>Regime</span><b id="regime">—</b></div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-title">Open Orders</div>
+    <table>
+      <thead><tr><th>Symbol</th><th>Side</th><th>Qty</th><th>Status</th></tr></thead>
+      <tbody id="orders"><tr><td colspan="4">Loading...</td></tr></tbody>
+    </table>
+  </div>
+
+  <div class="panel">
+    <div class="panel-title">Positions</div>
+    <table>
+      <thead><tr><th>Symbol</th><th>Qty</th><th>Avg Cost</th><th>Value</th></tr></thead>
+      <tbody id="positions"><tr><td colspan="4">Loading...</td></tr></tbody>
+    </table>
+  </div>
+
+  <div class="panel wide">
+    <div class="panel-title">Decision Payload</div>
+    <pre id="decisionPayload">Loading...</pre>
+  </div>
+
+  <div class="panel wide">
+    <div class="panel-title">System Health</div>
+    <pre id="health">Loading...</pre>
+  </div>
+</section>
+
+</main>
+
+<script src="/bot-terminal/terminal.js"></script>
+</body>
+</html>

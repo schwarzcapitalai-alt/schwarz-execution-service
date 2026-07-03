@@ -1,0 +1,166 @@
+from fastapi import FastAPI
+from ibapi.client import EClient
+from ibapi.wrapper import EWrapper
+import threading
+import time
+import os
+
+app = FastAPI()
+
+IB_HOST = os.getenv("IB_HOST", "127.0.0.1")
+IB_PORT = int(os.getenv("IB_PORT", "4002"))
+IB_CLIENT_ID = int(os.getenv("IB_CLIENT_ID", "12001"))
+EXECUTION_MODE = os.getenv("EXECUTION_MODE", "READ_ONLY")
+
+
+class IBApp(EWrapper, EClient):
+    def __init__(self):
+        EClient.__init__(self, self)
+        self.connected_flag = False
+        self.account_summary_rows = []
+        self.account_summary_done = False
+        self.position_rows = []
+        self.position_done = False
+
+    def nextValidId(self, orderId):
+        self.connected_flag = True
+
+    def accountSummary(self, reqId, account, tag, value, currency):
+        self.account_summary_rows.append({
+            "account": account,
+            "tag": tag,
+            "value": value,
+            "currency": currency,
+        })
+
+    def accountSummaryEnd(self, reqId):
+        self.account_summary_done = True
+
+    def position(self, account, contract, position, avgCost):
+        self.position_rows.append({
+            "account": account,
+            "symbol": contract.symbol,
+            "secType": contract.secType,
+            "exchange": contract.exchange,
+            "currency": contract.currency,
+            "position": float(position),
+            "avgCost": float(avgCost),
+            "conId": contract.conId,
+        })
+
+    def positionEnd(self):
+        self.position_done = True
+
+
+def connect_ib():
+    app_ib = IBApp()
+
+    app_ib.connect(
+        IB_HOST,
+        IB_PORT,
+        clientId=IB_CLIENT_ID
+    )
+
+    thread = threading.Thread(
+        target=app_ib.run,
+        daemon=True
+    )
+
+    thread.start()
+
+    deadline = time.time() + 5
+
+    while time.time() < deadline:
+        if app_ib.connected_flag:
+            break
+        time.sleep(0.1)
+
+    return app_ib
+
+
+@app.get("/")
+def root():
+    return {
+        "service": "execution_service",
+        "mode": EXECUTION_MODE
+    }
+
+
+@app.get("/health")
+def health():
+    return {
+        "service": "execution_service",
+        "status": "healthy"
+    }
+
+
+@app.get("/ib/status")
+def ib_status():
+    app_ib = connect_ib()
+
+    result = {
+        "connected": app_ib.isConnected(),
+        "api_ready": app_ib.connected_flag,
+        "host": IB_HOST,
+        "port": IB_PORT,
+        "mode": EXECUTION_MODE
+    }
+
+    app_ib.disconnect()
+    return result
+
+
+@app.get("/account/cash")
+def account_cash():
+    app_ib = connect_ib()
+
+    if not app_ib.isConnected():
+        return {"connected": False, "mode": EXECUTION_MODE, "cash": []}
+
+    tags = "NetLiquidation,TotalCashValue,AvailableFunds,BuyingPower,ExcessLiquidity"
+
+    app_ib.reqAccountSummary(9001, "All", tags)
+
+    deadline = time.time() + 8
+    while time.time() < deadline:
+        if app_ib.account_summary_done:
+            break
+        time.sleep(0.1)
+
+    app_ib.cancelAccountSummary(9001)
+
+    result = {
+        "connected": app_ib.isConnected(),
+        "mode": EXECUTION_MODE,
+        "cash": app_ib.account_summary_rows
+    }
+
+    app_ib.disconnect()
+    return result
+
+
+@app.get("/account/positions")
+def account_positions():
+    app_ib = connect_ib()
+
+    if not app_ib.isConnected():
+        return {"connected": False, "mode": EXECUTION_MODE, "positions": []}
+
+    app_ib.reqPositions()
+
+    deadline = time.time() + 8
+    while time.time() < deadline:
+        if app_ib.position_done:
+            break
+        time.sleep(0.1)
+
+    app_ib.cancelPositions()
+
+    result = {
+        "connected": app_ib.isConnected(),
+        "mode": EXECUTION_MODE,
+        "positions": app_ib.position_rows
+    }
+
+    app_ib.disconnect()
+    return result
